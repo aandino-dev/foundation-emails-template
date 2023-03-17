@@ -17,6 +17,11 @@ const $ = plugins();
 var dartSass = require('gulp-sass');
 dartSass.compiler = require('sass');
 
+const i18n = require('gulp-html-i18n');
+const rename = require('gulp-rename');
+
+const tenants = ['tenant1', 'tenant2'];
+
 // Look for the --production flag
 const PRODUCTION = !!yargs.argv.production;
 const EMAIL = yargs.argv.to;
@@ -26,7 +31,7 @@ var CONFIG;
 
 // Build the "dist" folder by running all of the below tasks
 gulp.task('build',
-  gulp.series(clean, pages, sass, images, inline));
+  gulp.series(clean, lang, pages, sass, ink, images, inline, doc_sass, docs));
 
 // Build emails, run the server, and watch for file changes
 gulp.task('default',
@@ -50,18 +55,70 @@ function clean(done) {
   rimraf('dist', done);
 }
 
+function lang(){
+    return gulp.src(['src/pages/**/*.html'])//, '!src/pages/**/index.html'])
+      .pipe(i18n({
+        langDir: 'src/lang',
+        createLangDirs: true,
+        delimiters: ['{{', '}}']
+      }))
+      .pipe(gulp.dest('dist/templates'));
+}
+
 // Compile layouts, pages, and partials into flat HTML files
 // Then parse using Inky templates
 function pages() {
-  return gulp.src(['src/pages/**/*.html', '!src/pages/archive/**/*.html'])
+  const streams = tenants.map(tenant => {
+  return gulp.src(['dist/templates/*/*.html', '!dist/templates/archive/*/*.html'])
     .pipe(panini({
-      root: 'src/pages',
+      root: 'dist/templates',
       layouts: 'src/layouts',
       partials: 'src/partials',
-      helpers: 'src/helpers'
+      helpers: 'src/helpers',
+      data: 'src/data'
+    }))
+    .pipe(gulp.dest(`dist/tenants/${tenant}`));
+  });
+
+  return merge(...streams);
+}
+
+function docs() {
+  return gulp.src('src/pages/index.html')
+    .pipe(panini({
+      root: 'dist/templates',
+      layouts: 'src/layouts',
+      partials: 'src/partials',
+      helpers: 'src/helpers',
+      data: 'src/data'
     }))
     .pipe(inky())
     .pipe(gulp.dest('dist'));
+}
+
+function doc_sass() {
+  return gulp.src(`src/assets/scss/app.scss`)
+    .pipe($.if(!PRODUCTION, $.sourcemaps.init()))
+    .pipe(dartSass.sync({
+        includePaths: ['node_modules/foundation-emails/scss']
+    }).on('error', dartSass.logError))
+    .pipe($.if(PRODUCTION, $.uncss(
+      {
+        html: ['dist/**/*.html']
+      })))
+    .pipe($.if(!PRODUCTION, $.sourcemaps.write()))
+    .pipe(rename(function(file) {
+      // Use the name of the SCSS file as the name of the tenant
+      // file.basename = 'app';
+      file.dirname = 'css';
+    }))
+    .pipe(gulp.dest(`dist`));
+}
+
+function ink(){
+  return gulp.src('dist/tenants/**/*.html')
+  .pipe(inky())
+  .pipe(gulp.dest('dist/tenants'));
 }
 
 // Reset Panini's cache of layouts and partials
@@ -72,7 +129,8 @@ function resetPages(done) {
 
 // Compile Sass into CSS
 function sass() {
-  return gulp.src('src/assets/scss/app.scss')
+  const streams = tenants.map(tenant => {
+  return gulp.src(`src/assets/scss/${tenant}/app.scss`)
     .pipe($.if(!PRODUCTION, $.sourcemaps.init()))
     .pipe(dartSass.sync({
         includePaths: ['node_modules/foundation-emails/scss']
@@ -82,7 +140,15 @@ function sass() {
         html: ['dist/**/*.html']
       })))
     .pipe($.if(!PRODUCTION, $.sourcemaps.write()))
-    .pipe(gulp.dest('dist/css'));
+    .pipe(rename(function(file) {
+      // Use the name of the SCSS file as the name of the tenant
+      // file.basename = 'app';
+      file.dirname = 'css';
+    }))
+    .pipe(gulp.dest(`dist/tenants/${tenant}`));
+  });
+
+  return merge(...streams);
 }
 
 // Copy and compress images
@@ -94,9 +160,13 @@ function images() {
 
 // Inline CSS and minify HTML
 function inline() {
-  return gulp.src('dist/**/*.html')
-    .pipe($.if(PRODUCTION, inliner('dist/css/app.css')))
-    .pipe(gulp.dest('dist'));
+  const streams = tenants.map(tenant => {
+  return gulp.src(`dist/tenants/${tenant}/**/*.html`)
+    .pipe($.if(PRODUCTION, inliner((`dist/tenants/${tenant}/css/app.css`))))
+    .pipe(gulp.dest(`dist/tenants/${tenant}`));
+  });
+
+  return merge(...streams);
 }
 
 // Start a server with LiveReload to preview the site in
